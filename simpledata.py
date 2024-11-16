@@ -103,14 +103,14 @@ class SimpleData:
             CREATE TABLE IF NOT EXISTS common_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type TEXT NOT NULL,
-                value1 TEXT NOT NULL,
-                value2 TEXT NOT NULL,
-                value3 TEXT NOT NULL,
-                value4 TEXT NOT NULL,
-                number1 REAL NOT NULL,
-                number2 REAL NOT NULL,
-                number3 REAL NOT NULL,
-                number4 REAL NOT NULL,
+                value1 TEXT,
+                value2 TEXT,
+                value3 TEXT,
+                value4 TEXT,
+                number1 REAL,
+                number2 REAL,
+                number3 REAL,
+                number4 REAL,
                 date TEXT NOT NULL
             )
         ''')
