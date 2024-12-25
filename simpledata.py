@@ -249,7 +249,8 @@ class SimpleData:
 
         try:
             self._ensure_table_exists(conn)
-            cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            now = datetime.datetime.now(datetime.timezone.utc)
+            cutoff_date = (now - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
             cursor.execute('''
                 DELETE FROM common_data
@@ -291,7 +292,7 @@ if __name__ == "__main__":
     result_b = simple_data.load_strings(TableType.Check)
     print(f"Loaded strings from Table B: {result_b}")
 
-    current_date = datetime.datetime.now()
+    current_date = datetime.datetime.now(datetime.timezone.utc)
 
     # 데이터 삽입
     simple_data.insert_common_data("config", "value1", "value2", "value3", "value4", 1, 2.0, 3.0, 4.0, current_date)
@@ -304,8 +305,8 @@ if __name__ == "__main__":
     print(f"Records: {records}")
 
     # 두 날짜 사이의 데이터 조회
-    start_date = datetime.datetime.now() - datetime.timedelta(days=1)
-    end_date = datetime.datetime.now()
+    start_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+    end_date = datetime.datetime.now(datetime.timezone.utc)
     records_between = simple_data.get_common_data_between_dates("config", start_date, end_date)
     print(f"Records between dates: {records_between}")
 
