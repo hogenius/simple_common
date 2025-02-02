@@ -1,11 +1,13 @@
 import datetime
 import sqlite3
 from enum import Enum
+import pandas as pd
 
 # Enum 정의
 class TableType(Enum):
     Msg = "table_msg"
     Check = "table_check"
+    OHLCV = "table_ohlcv_data"  # OHLCV 데이터 저장 테이블 추가
 
 class SimpleData:
     def __init__(self, db_path='example.db'):
@@ -268,6 +270,163 @@ class SimpleData:
             cursor.close()
             conn.close()
 
+    def _ensure_ohlcv_table_exists(self, conn):
+        """ OHLCV 테이블이 존재하지 않으면 생성 """
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS {TableType.OHLCV.value} (
+                ticker TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                value REAL,
+                price_change REAL,
+                PRIMARY KEY (ticker, timestamp)  -- 중복 방지
+            )
+        ''')
+        cursor.close()
+
+    def insert_ohlcv_data(self, ticker, df):
+        """ 특정 코인의 OHLCV 데이터를 저장하는 메서드 (중복 방지: REPLACE INTO) """
+        conn = self._connect()
+        cursor = conn.cursor()
+
+        try:
+            self._ensure_ohlcv_table_exists(conn)
+
+            # 데이터프레임의 인덱스를 timestamp 컬럼으로 변환
+            if "timestamp" not in df.columns:
+                df["timestamp"] = df.index  # 인덱스를 timestamp 컬럼으로 설정
+            
+            # timestamp 값을 문자열로 변환 (SQLite에서 처리 가능하도록)
+            df["timestamp"] = df["timestamp"].astype(str)
+
+            # 변동률 계산
+            df["price_change"] = df["close"].pct_change() * 100  # 변동률 계산 (퍼센트)
+
+            # DataFrame에 ticker 컬럼 추가
+            df["ticker"] = ticker
+
+            # 기존 데이터를 덮어쓰기 위해 REPLACE INTO 사용
+            for _, row in df.iterrows():
+                cursor.execute(f'''
+                    REPLACE INTO {TableType.OHLCV.value} 
+                    (ticker, timestamp, open, high, low, close, volume, value, price_change)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    row["ticker"], row["timestamp"], row["open"], row["high"],
+                    row["low"], row["close"], row["volume"], row["value"], row["price_change"]
+                ))
+            
+            conn.commit()
+            print(f"✅ {ticker} OHLCV 데이터 저장 완료! {len(df)}개 행 삽입 (중복 제거)")
+
+        except sqlite3.DatabaseError as e:
+            print(f"❌ Database error occurred: {e}")
+            conn.rollback()
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def delete_ohlcv_by_ticker(self, ticker):
+        """ 특정 티커의 모든 OHLCV 데이터를 삭제하는 메서드 """
+        conn = self._connect()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(f"DELETE FROM {TableType.OHLCV.value} WHERE ticker = ?", (ticker,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            print(f"🗑️ Deleted {deleted_count} records for ticker: {ticker}")
+
+        except sqlite3.DatabaseError as e:
+            print(f"❌ Database error occurred: {e}")
+            conn.rollback()
+
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_ohlcv_data(self, ticker, start_date, end_date):
+        """ 특정 코인의 날짜 범위 OHLCV 데이터를 조회하는 메서드 """
+        conn = self._connect()
+        cursor = conn.cursor()
+        result = []
+
+        try:
+            self._ensure_ohlcv_table_exists(conn)
+            start_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
+            end_date_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
+
+            cursor.execute(f'''
+                SELECT * FROM {TableType.OHLCV.value}
+                WHERE ticker = ? AND timestamp BETWEEN ? AND ?
+            ''', (ticker, start_date_str, end_date_str))
+            rows = cursor.fetchall()
+
+            # 결과를 DataFrame으로 변환
+            columns = ["ticker", "timestamp", "open", "high", "low", "close", "volume", "value", "price_change"]
+            result = pd.DataFrame(rows, columns=columns)
+
+        except sqlite3.DatabaseError as e:
+            print(f"❌ Database error occurred: {e}")
+
+        finally:
+            cursor.close()
+            conn.close()
+
+        return result
+
+    def get_latest_ohlcv_timestamp(self, ticker):
+        """ 특정 코인의 가장 최신 OHLCV 데이터 timestamp 반환 """
+        conn = self._connect()
+        cursor = conn.cursor()
+        last_timestamp = None
+
+        try:
+            self._ensure_ohlcv_table_exists(conn)
+            cursor.execute(f'''
+                SELECT MAX(timestamp) FROM {TableType.OHLCV.value} WHERE ticker = ?
+            ''', (ticker,))
+            last_timestamp = cursor.fetchone()[0]
+
+        except sqlite3.DatabaseError as e:
+            print(f"❌ Database error occurred: {e}")
+
+        finally:
+            cursor.close()
+            conn.close()
+
+        return last_timestamp
+    
+    def delete_old_ohlcv_data(self, years=2):
+        """ 현재 UTC 시간 기준으로 2년 이상된 OHLCV 데이터를 삭제하는 메서드 """
+        conn = self._connect()
+        cursor = conn.cursor()
+
+        try:
+            # 2년 전의 UTC 시간 계산
+            cutoff_date = (datetime.datetime.utcnow() - datetime.timedelta(days=years * 365)).strftime("%Y-%m-%d %H:%M:%S")
+
+            cursor.execute(f'''
+                DELETE FROM {TableType.OHLCV.value} WHERE timestamp < ?
+            ''', (cutoff_date,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            print(f"🗑️ Deleted {deleted_count} old OHLCV records older than {years} years (before {cutoff_date} UTC).")
+
+        except sqlite3.DatabaseError as e:
+            print(f"❌ Database error occurred: {e}")
+            conn.rollback()
+
+        finally:
+            cursor.close()
+            conn.close()
+
 # 사용 예제
 if __name__ == "__main__":
     # 특정 경로의 데이터베이스 파일을 사용
@@ -315,3 +474,40 @@ if __name__ == "__main__":
 
     # 특정 ID의 데이터 삭제
     simple_data.delete_common_data_by_id(1)
+
+    # ========== OHLCV 데이터 관련 테스트 ==========
+    print("\n=== OHLCV 데이터 테스트 시작 ===")
+
+    import pyupbit
+    import time
+
+    # 2년 전 날짜 계산
+    #start_date = datetime.datetime.now() - datetime.timedelta(days=2*365)
+    start_date = datetime.datetime.now() - datetime.timedelta(days=10)
+
+    # PyUpbit에서 15분봉 데이터 가져오기
+    df = pyupbit.get_ohlcv_from(ticker="KRW-BTC", interval="minute15", fromDatetime=start_date)
+    print(f"load get_ohlcv_from {df}")
+
+    simple_data.delete_ohlcv_by_ticker("KRW-BTC")
+
+    if df is not None and not df.empty:
+        # 데이터 저장
+        simple_data.insert_ohlcv_data("KRW-BTC", df)
+        print(f"Inserted OHLCV data: {len(df)} rows")
+    else:
+        print("❌ Failed to fetch OHLCV data from PyUpbit.")
+
+    # 가장 최근 OHLCV 데이터 확인
+    latest_timestamp = simple_data.get_latest_ohlcv_timestamp("KRW-BTC")
+    print(f"Latest OHLCV timestamp: {latest_timestamp}")
+
+    # 최근 1일치 OHLCV 데이터 조회
+    start_date = datetime.datetime.now() - datetime.timedelta(days=1)
+    end_date = datetime.datetime.now()
+    ohlcv_records = simple_data.get_ohlcv_data("KRW-BTC", start_date, end_date)
+
+    print(f"Retrieved {len(ohlcv_records)} rows of OHLCV data from last 1 day:")
+    print(ohlcv_records.head())
+
+    print("✅ OHLCV 데이터 테스트 완료!")
